@@ -104,42 +104,6 @@
     </div>
   </section>
 
-  <!-- written parts -->
-  <section id="writeup" aria-labelledby="writeup-title">
-    <h2 id="writeup-title">Write-up</h2>
-
-    <h3>Motivation</h3>
-    <p>[TEAM: 2–3 sentences in your own words on why you chose this question and why it matters.]</p>
-
-    <h3>Data and transformations</h3>
-    <ul>
-      <li>Source: World Bank indicators (<code>gender.csv</code> and <code>health.csv</code>) from the
-        <a href="https://github.com/light-and-salt/World-Bank-Data-by-Indicators">light-and-salt</a> repository.</li>
-      <li>Removed 48 World Bank aggregate codes (regions, income groups, &ldquo;World&rdquo;), leaving 217 countries.</li>
-      <li>Kept only country-years with both total fertility rate and the selected female enrollment measure; nothing was imputed.</li>
-      <li>Joined population (from <code>health.csv</code>) for dot size; computed enrollment gap = female minus male secondary enrollment.</li>
-      <li>The notebook <code>oza3.ipynb</code> in this repository shows the full preparation steps.</li>
-    </ul>
-
-    <h3>Design rationale</h3>
-    <p>[TEAM: rewrite in your own words. Points to cover, drawn from the choices made in this build:]</p>
-    <ul>
-      <li><strong>Scatterplot</strong> with position on both axes for the two variables being related, because position is the most accurate channel for judging a relationship.</li>
-      <li><strong>Area</strong> for population so large countries (China, India) are visible without hiding small ones; <strong>diverging red–blue color</strong> for the girls-minus-boys enrollment gap, centred on parity.</li>
-      <li><strong>Animation over year</strong> (play button + slider) because the story is movement; fixed axes so motion is comparable.</li>
-      <li><strong>Details on demand</strong> (tooltip) rather than permanent labels to limit clutter; <strong>pinning with trails</strong> to follow single countries.</li>
-      <li><strong>Linked correlation chart</strong> that doubles as a year selector.</li>
-      <li>Alternatives considered: [TEAM: e.g. small multiples by decade, a connected scatterplot for all countries, a map, a line chart per country, a log fertility axis, and why you rejected them.]</li>
-    </ul>
-
-    <h3>Development process</h3>
-    <ul>
-      <li>Team members and who did what: [TEAM]</li>
-      <li>Approximate time spent (people-hours): [TEAM]</li>
-      <li>What took the most time: [TEAM]</li>
-    </ul>
-  </section>
-
 </main>
 
 <footer>
