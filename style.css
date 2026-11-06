@@ -241,3 +241,9 @@ footer { max-width: 1200px; margin: 0 auto; padding: 8px 32px 56px; color: var(-
 
 .takeaway .note { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--muted); }
 .takeaway .note strong { color: var(--ink); }
+
+/* write-up readability */
+#writeup { max-width: 860px; }
+#writeup p { margin: 0 0 14px; }
+.member { margin-top: 22px; padding: 18px 22px 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.member h4 { margin: 0 0 8px; font-size: 0.78rem; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
