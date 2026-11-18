@@ -1,20 +1,35 @@
 "use strict";
 
+/* Visual 5 — "Who outlives whom?" (static version, D3 v7 only)
+
+   One dumbbell per country: the gap between female and male life expectancy at birth
+   (female minus male, in years) in a start year (open dot) and an end year (filled dot).
+
+   Built so interactivity can be added later without a rewrite:
+     - all data work lives in buildRows(start, end); all drawing in draw(start, end)
+     - draw() uses keyed data joins, so calling it again with a new end year (e.g. from a
+       slider or a scroll step) updates the same marks instead of redrawing the page
+     - every mark carries a class and data-code attribute for hover / brushing / linking */
+
 (function () {
-  const DATA_URL = "girls_education_fertility.csv";
-  const REPLACEMENT = 2.1;
-  const STATIC_YEARS = [1990, 2015];
-  const STATIC_LABELS = ["Brazil", "Nigeria", "India", "China", "United States", "Korea, Rep."];
+  const DATA_URL = "life_expectancy_gap.csv";
+  const START = 1960;
+  const END = 2019;
+  const CHANGE_THRESHOLD = 0.5; // years; smaller moves count as "about the same"
 
-  const MEASURES = {
-    sec: { key: "sec_enroll_female", axis: "Girls enrolled in secondary school (% gross)", noun: "Girls in secondary school" },
-    ter: { key: "ter_enroll_female", axis: "Women enrolled in tertiary education (% gross)", noun: "Women in tertiary education" },
+  // Same palette as the CSS variables (female pink, male blue)
+  const COLORS = { widened: "#c0508a", narrowed: "#3f7fb3", same: "#8a94a6", ink: "#475569" };
+
+  const NAMES = {
+    "Russian Federation": "Russia",
+    "Iran, Islamic Rep.": "Iran",
+    "Egypt, Arab Rep.": "Egypt",
+    "Korea, Rep.": "South Korea",
+    "Congo, Dem. Rep.": "DR Congo",
   };
-
-  const fmt0 = d3.format(",.0f");
+  const label = (c) => NAMES[c] || c;
   const fmt1 = d3.format(".1f");
-  const fmt2 = d3.format(".2f");
-  const shortName = (n) => n.replace(", Rep.", "");
+  const signed = d3.format("+.1f");
 
   d3.csv(DATA_URL, d3.autoType).then(init).catch((err) => {
     console.error(err);
@@ -22,481 +37,226 @@
   });
 
   function init(data) {
-    // constants
-    const popMax = d3.max(data, (d) => d.population);
-    const yDomain = [0.5, Math.ceil(d3.max(data, (d) => d.fertility) * 2) / 2];
-    const xDomains = {
-      sec: [0, Math.ceil(d3.max(data, (d) => d.sec_enroll_female) / 10) * 10],
-      ter: [0, Math.ceil(d3.max(data, (d) => d.ter_enroll_female) / 10) * 10],
-    };
+    const featured = data.filter((d) => d.featured === true || d.featured === "True");
 
-    // diverging red (boys ahead); warm grey (parity); blue (girls ahead)
-    const gapInterp = d3.interpolateRgbBasis(["#9b1d34", "#d6604d", "#d8d2c8", "#5aa0c8", "#1f4e8c"]);
-    const color = d3.scaleDiverging(gapInterp).domain([-40, 0, 40]).clamp(true);
-    const DOT_STROKE = "rgba(30, 41, 59, 0.35)";
-
-    const byCode = d3.group(data, (d) => d.code);
-    const codeToName = new Map(data.map((d) => [d.code, d.country]));
-    const nameToCode = new Map(data.map((d) => [d.country.toLowerCase(), d.code]));
-
-    // index rows by measure -> year
-    const idx = {};
-    const years = {};
-    Object.keys(MEASURES).forEach((k) => {
-      const key = MEASURES[k].key;
-      const valid = data.filter((d) => d[key] != null && d.fertility != null);
-      idx[k] = d3.group(valid, (d) => d.year);
-      years[k] = Array.from(idx[k].keys()).sort(d3.ascending);
-    });
-    const rowsAt = (m, y) => idx[m].get(y) || [];
-
-    // correlation by year for each measure
-    const corr = {};
-    Object.keys(MEASURES).forEach((k) => {
-      corr[k] = years[k]
-        .map((y) => ({ year: y, n: rowsAt(k, y).length, r: pearson(rowsAt(k, y), MEASURES[k].key) }))
-        .filter((d) => d.n >= 20);
-    });
-
-    function pearson(rows, key) {
-      const mx = d3.mean(rows, (d) => d[key]);
-      const my = d3.mean(rows, (d) => d.fertility);
-      let sxy = 0, sxx = 0, syy = 0;
-      rows.forEach((d) => {
-        const dx = d[key] - mx, dy = d.fertility - my;
-        sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
-      });
-      return sxy / Math.sqrt(sxx * syy);
-    }
-
-    /* ---------- shared helpers ---------- */
-    function buildScatter(selector, o) {
-      const m = o.margin;
-      const iw = o.width - m.left - m.right;
-      const ih = o.height - m.top - m.bottom;
-
-      const svg = d3.select(selector).append("svg")
-        .attr("viewBox", `0 0 ${o.width} ${o.height}`)
-        .attr("role", "img")
-        .attr("aria-label", o.aria);
-
-      const g = svg.append("g").attr("transform", `translate(${m.left},${m.top})`);
-      const x = d3.scaleLinear().domain(o.xDomain).range([0, iw]);
-      const y = d3.scaleLinear().domain(yDomain).range([ih, 0]);
-      const r = d3.scaleSqrt().domain([0, popMax]).range([2, o.rMax]);
-
-      const grid = g.append("g").attr("class", "grid");
-      const xAxis = g.append("g").attr("class", "axis").attr("transform", `translate(0,${ih})`);
-      const yAxis = g.append("g").attr("class", "axis");
-
-      grid.call(d3.axisLeft(y).ticks(8).tickSize(-iw).tickFormat(""));
-      xAxis.call(d3.axisBottom(x).ticks(8));
-      yAxis.call(d3.axisLeft(y).ticks(8));
-
-      const xLabel = g.append("text").attr("class", "axis-label")
-        .attr("x", iw / 2).attr("y", ih + 42).attr("text-anchor", "middle").text(o.xLabel);
-      g.append("text").attr("class", "axis-label")
-        .attr("transform", "rotate(-90)").attr("x", -ih / 2).attr("y", -m.left + 16)
-        .attr("text-anchor", "middle").text("Births per woman (total fertility rate)");
-
-      g.append("line").attr("class", "ref-line")
-        .attr("x1", 0).attr("x2", iw).attr("y1", y(REPLACEMENT)).attr("y2", y(REPLACEMENT));
-      g.append("text").attr("class", "ref-label")
-        .attr("x", iw - 4).attr("y", y(REPLACEMENT) - 5).attr("text-anchor", "end")
-        .text("replacement level (2.1 births)");
-
-      const layers = {
-        watermark: g.append("g"),
-        trails: g.append("g"),
-        dots: g.append("g"),
-        labels: g.append("g"),
-        message: g.append("g"),
-      };
-
-      const chart = { svg, g, x, y, r, iw, ih, layers, xAxis, grid, xLabel, key: o.key };
-
-      chart.radius = (d) => (d.population ? r(d.population) : 3);
-
-      chart.setMeasure = function (key, domain, label) {
-        chart.key = key;
-        x.domain(domain);
-        xAxis.transition().duration(500).call(d3.axisBottom(x).ticks(8));
-        xLabel.text(label);
-      };
-
-      return chart;
-    }
-
-    function buildLegend(selector) {
-      const w = 640, h = 72;
-      const svg = d3.select(selector).append("svg").attr("class", "legend")
-        .attr("viewBox", `0 0 ${w} ${h}`).attr("role", "img")
-        .attr("aria-label", "Legend: color shows girls minus boys secondary enrollment, area shows population");
-      const id = "grad-" + selector.replace(/[^a-z]/gi, "");
-      const grad = svg.append("defs").append("linearGradient").attr("id", id);
-      d3.range(0, 1.001, 0.1).forEach((t) =>
-        grad.append("stop").attr("offset", t).attr("stop-color", gapInterp(t)));
-
-      svg.append("text").attr("x", 0).attr("y", 12).style("font-weight", 600)
-        .text("Color: Girls minus Boys Enrollment (pp)");
-      svg.append("rect").attr("x", 0).attr("y", 22).attr("width", 260).attr("height", 12).attr("rx", 2).attr("fill", `url(#${id})`);
-      const lx = d3.scaleLinear().domain([-40, 40]).range([0, 260]);
-      [[-40, "−40 boys ahead"], [0, "0"], [40, "+40 girls ahead"]].forEach(([v, t], i) => {
-        svg.append("text").attr("x", lx(v)).attr("y", 50)
-          .attr("text-anchor", i === 0 ? "start" : i === 2 ? "end" : "middle").text(t);
-      });
-
-      svg.append("text").attr("x", 340).attr("y", 12).style("font-weight", 600).text("Area: population");
-      const rs = d3.scaleSqrt().domain([0, popMax]).range([2, 16]);
-      let left = 340;
-      [[1e7, "10 M"], [1e8, "100 M"], [1e9, "1 B"]].forEach(([v, t]) => {
-        const rr = rs(v);
-        svg.append("circle").attr("cx", left + rr).attr("cy", 38).attr("r", rr)
-          .attr("fill", "none").attr("stroke", "#64748b");
-        svg.append("text").attr("x", left + rr).attr("y", 66).attr("text-anchor", "middle").text(t);
-        left += rr * 2 + 34;
-      });
-    }
-
-    // static graph
-    (function drawStatic() {
-      const panels = d3.select("#static-charts");
-      const dom = xDomains.sec;
-      STATIC_YEARS.forEach((year) => {
-        const rows = rowsAt("sec", year);
-        const panel = panels.append("div").attr("class", "panel");
-        panel.append("h3").html(`${year} <span>· ${rows.length} countries</span>`);
-        const holder = panel.append("div").attr("id", `static-${year}`);
-
-        const chart = buildScatter(`#static-${year}`, {
-          width: 540, height: 430, margin: { top: 10, right: 14, bottom: 52, left: 56 },
-          xDomain: dom, xLabel: MEASURES.sec.axis, rMax: 24, key: MEASURES.sec.key,
-          aria: `Scatterplot for ${year}: girls' secondary enrollment versus births per woman`,
+    /* ---------- data: one row per country with start and end values ---------- */
+    function buildRows(start, end) {
+      const byCode = d3.group(featured, (d) => d.code);
+      const rows = [];
+      byCode.forEach((vals, code) => {
+        const a = vals.find((d) => d.year === start);
+        const b = vals.find((d) => d.year === end);
+        if (!a || !b) return;
+        const change = b.gap - a.gap;
+        rows.push({
+          code, country: b.country, name: label(b.country),
+          start: a.gap, end: b.gap, change, population: b.population,
+          startF: a.life_exp_female, startM: a.life_exp_male,
+          endF: b.life_exp_female, endM: b.life_exp_male,
+          kind: change > CHANGE_THRESHOLD ? "widened" : change < -CHANGE_THRESHOLD ? "narrowed" : "same",
         });
-
-        const sorted = rows.slice().sort((a, b) => d3.descending(a.population || 0, b.population || 0));
-        chart.layers.dots.selectAll("circle").data(sorted).join("circle")
-          .attr("cx", (d) => chart.x(d.sec_enroll_female))
-          .attr("cy", (d) => chart.y(d.fertility))
-          .attr("r", chart.radius)
-          .attr("fill", (d) => color(d.enroll_gap))
-          .attr("fill-opacity", 0.85)
-          .attr("stroke", DOT_STROKE).attr("stroke-width", 0.7);
-
-        chart.layers.labels.selectAll("text").data(sorted.filter((d) => STATIC_LABELS.includes(d.country)))
-          .join("text").attr("class", "halo")
-          .attr("x", (d) => chart.x(d.sec_enroll_female) + chart.radius(d) + 3)
-          .attr("y", (d) => chart.y(d.fertility) - 3)
-          .text((d) => shortName(d.country));
       });
-      buildLegend("#legend-static");
-    })();
-
-    // dynamic/interactive graph
-    const state = { measure: "sec", year: 1970, playing: false, pinned: new Set() };
-    let timer = null;
-
-    const tooltip = d3.select("#tooltip");
-    const slider = d3.select("#year");
-    const yearOut = d3.select("#year-out");
-    const playBtn = d3.select("#play");
-
-    const chart = buildScatter("#scatter", {
-      width: 860, height: 560, margin: { top: 14, right: 20, bottom: 54, left: 62 },
-      xDomain: xDomains.sec, xLabel: MEASURES.sec.axis, rMax: 30, key: MEASURES.sec.key,
-      aria: "Animated scatterplot of female enrollment versus births per woman, by country and year",
-    });
-    buildLegend("#legend");
-
-    const watermark = chart.layers.watermark.append("text").attr("class", "year-watermark")
-      .attr("x", chart.iw - 10).attr("y", 120).attr("text-anchor", "end");
-    const emptyMsg = chart.layers.message.append("text").attr("class", "empty-msg")
-      .attr("x", chart.iw / 2).attr("y", chart.ih / 2).attr("text-anchor", "middle").text("");
-
-    d3.select("#countries").selectAll("option")
-      .data(Array.from(new Set(data.map((d) => d.country))).sort(d3.ascending))
-      .join("option").attr("value", (d) => d);
-
-    // function for tooltip
-    function showTip(event, d) {
-      const key = MEASURES[state.measure].key;
-      const gap = d.enroll_gap;
-      const gapTxt = (gap > 0 ? "+" : "") + fmt1(gap) + " pp";
-      const pop = d.population == null ? "n/a"
-        : d.population >= 1e9 ? fmt2(d.population / 1e9) + " billion"
-        : d.population >= 1e6 ? fmt1(d.population / 1e6) + " million"
-        : fmt0(d.population / 1e3) + " thousand";
-      const row = (a, b) => `<div class="row"><span>${a}</span><span>${b}</span></div>`;
-      tooltip.html(
-        `<strong>${d.country}</strong> · ${d.year}` +
-        row(MEASURES[state.measure].noun, fmt1(d[key]) + "%") +
-        row("Births per woman", fmt2(d.fertility)) +
-        row("Teen births /1,000", d.adolescent_fertility == null ? "n/a" : fmt0(d.adolescent_fertility)) +
-        row("Girls − boys (secondary)", gapTxt) +
-        row("Population", pop)
-      ).style("opacity", 1).attr("aria-hidden", "false");
-      moveTip(event);
-    }
-    function moveTip(event) {
-      const node = tooltip.node();
-      const w = node.offsetWidth;
-      let left = event.pageX + 14;
-      if (left + w > window.scrollX + document.documentElement.clientWidth - 8) left = event.pageX - w - 14;
-      tooltip.style("left", left + "px").style("top", event.pageY - 12 + "px");
-    }
-    function hideTip() { tooltip.style("opacity", 0).attr("aria-hidden", "true"); }
-
-    // function for dots
-    function drawDots(rows, dur) {
-      const key = MEASURES[state.measure].key;
-      const sorted = rows.slice().sort((a, b) => d3.descending(a.population || 0, b.population || 0));
-
-      const sel = chart.layers.dots.selectAll("circle.dot:not(.leaving)").data(sorted, (d) => d.code);
-
-      sel.exit().classed("leaving", true)
-        .transition().duration(dur).attr("r", 0).remove();
-
-      const entered = sel.enter().append("circle").attr("class", "dot")
-        .attr("cx", (d) => chart.x(d[key])).attr("cy", (d) => chart.y(d.fertility))
-        .attr("r", 0).attr("fill-opacity", 0.85).attr("stroke", DOT_STROKE).attr("stroke-width", 0.7)
-        .attr("fill", (d) => color(d.enroll_gap));
-
-      const merged = entered.merge(sel)
-        .on("mouseenter", showTip).on("mousemove", moveTip).on("mouseleave", hideTip)
-        .on("click", (event, d) => togglePin(d.code));
-
-      merged.sort((a, b) => d3.descending(a.population || 0, b.population || 0));
-
-      merged.classed("pinned", (d) => state.pinned.has(d.code))
-        .attr("stroke", (d) => (state.pinned.has(d.code) ? "#111" : DOT_STROKE))
-        .attr("stroke-width", (d) => (state.pinned.has(d.code) ? 2 : 0.7))
-        .transition().duration(dur).ease(d3.easeLinear)
-        .attr("cx", (d) => chart.x(d[key])).attr("cy", (d) => chart.y(d.fertility))
-        .attr("r", chart.radius).attr("fill", (d) => color(d.enroll_gap));
-
-      return sorted;
+      return rows.sort((p, q) => d3.descending(p.end, q.end));
     }
 
-    function drawPinned(rows, dur) {
-      const key = MEASURES[state.measure].key;
+    /* ---------- text generated from the data so it can't drift out of date ---------- */
+    function writeText(rows, start, end) {
+      const n = rows.length;
+      const womenLonger = rows.filter((d) => d.end > 0).length;
+      const menStart = rows.filter((d) => d.start < 0);
+      const all = womenLonger === n;
 
-      const labelRows = rows.filter((d) => state.pinned.has(d.code));
-      chart.layers.labels.selectAll("text.halo").data(labelRows, (d) => d.code)
-        .join(
-          (enter) => enter.append("text").attr("class", "halo")
-            .attr("x", (d) => chart.x(d[key]) + chart.radius(d) + 3).attr("y", (d) => chart.y(d.fertility) - 3),
-          (update) => update,
-          (exit) => exit.remove()
-        )
-        .text((d) => shortName(d.country))
-        .transition().duration(dur).ease(d3.easeLinear)
-        .attr("x", (d) => chart.x(d[key]) + chart.radius(d) + 3)
-        .attr("y", (d) => chart.y(d.fertility) - 3);
+      const menTxt = menStart.length === 0 ? ""
+        : menStart.length === 1 ? ` — in ${start}, men lived longer in one of them`
+        : ` — in ${start}, men lived longer in ${menStart.length} of them`;
+      d3.select("#f1-title").text(
+        `${all ? "Women now outlive men in all" : `Women now outlive men in ${womenLonger} of`} ${n} of the most populous countries${menTxt}`
+      );
 
-      const trails = Array.from(state.pinned).map((code) => ({
-        code,
-        rows: (byCode.get(code) || []).filter((d) => d[key] != null).sort((a, b) => d3.ascending(a.year, b.year)),
-      })).filter((t) => t.rows.length > 1);
+      d3.select("#f1-subtitle").text(
+        `Each row is one of the ${n} most populous countries (by ${end} population). The dots show the gap between ` +
+        `female and male life expectancy at birth (female minus male, in years) in ${start} (open) and ${end} (filled). ` +
+        `Regional and income-group aggregates were removed, and countries are sorted by their ${end} gap.`
+      );
 
-      const line = d3.line().x((d) => chart.x(d[key])).y((d) => chart.y(d.fertility));
-
-      const tsel = chart.layers.trails.selectAll("g.trail").data(trails, (t) => t.code)
-        .join((enter) => {
-          const gg = enter.append("g").attr("class", "trail");
-          gg.append("path");
-          gg.append("text").attr("class", "t-start");
-          gg.append("text").attr("class", "t-end");
-          return gg;
-        });
-
-      tsel.select("path").attr("d", (t) => line(t.rows));
-      tsel.select(".t-start")
-        .attr("x", (t) => chart.x(t.rows[0][key]) - 4).attr("y", (t) => chart.y(t.rows[0].fertility) - 6)
-        .attr("text-anchor", "end").text((t) => t.rows[0].year);
-      tsel.select(".t-end")
-        .attr("x", (t) => chart.x(t.rows[t.rows.length - 1][key]) + 4)
-        .attr("y", (t) => chart.y(t.rows[t.rows.length - 1].fertility) + 14)
-        .text((t) => t.rows[t.rows.length - 1].year);
-    }
-
-    function updateTakeaway(rows) {
-      d3.select("#takeaway-year").text(state.year);
-      const el = d3.select("#takeaway");
-      if (rows.length < 9) {
-        el.html("Too few countries report this measure in this year to compare. Try another year.");
-        return;
-      }
-      const key = MEASURES[state.measure].key;
-      const sorted = rows.slice().sort((a, b) => d3.ascending(a[key], b[key]));
-      const third = Math.floor(sorted.length / 3);
-      const lo = sorted.slice(0, third), hi = sorted.slice(-third);
-      const r = pearson(rows, key);
-      const noun = MEASURES[state.measure].noun.toLowerCase();
-      const loMax = d3.max(lo, (d) => d[key]);
-      const hiMin = d3.min(hi, (d) => d[key]);
-      const note = hiMin > 100
-        ? `<span class="note">Enrollment can top 100% because some students are older or younger than the usual school age.</span>`
-        : "";
-      el.html(
-        `In ${state.year}, <strong>${rows.length}</strong> countries reported both measures. ` +
-        `The third of countries with the <em>lowest</em> ${noun} (under ${fmt0(loMax)}%) had a typical (median) ` +
-        `<strong>${fmt1(d3.median(lo, (d) => d.fertility))}</strong> births per woman, versus ` +
-        `<strong>${fmt1(d3.median(hi, (d) => d.fertility))}</strong> in the third with the <em>highest</em> (over ${fmt0(hiMin)}%).` +
-        `${note}` +
-        `<span class="note">Correlation <strong>r = ${fmt2(r)}</strong>: more enrollment goes with fewer births, but this alone doesn't show cause.</span>`
+      const widened = rows.filter((d) => d.kind === "widened").length;
+      const narrowed = rows.filter((d) => d.kind === "narrowed").length;
+      const same = n - widened - narrowed;
+      d3.select("#f1-note").text(
+        `Since ${start}, the gap widened by more than ${CHANGE_THRESHOLD} year in ${widened} of these countries, ` +
+        `narrowed in ${narrowed}, and changed little in ${same}. ` +
+        `Source: World Bank life expectancy at birth by sex. Gap = female minus male, in years.`
       );
     }
 
-    const cm = { top: 14, right: 12, bottom: 30, left: 38 };
-    const cw = 340, chh = 200;
-    const ciw = cw - cm.left - cm.right, cih = chh - cm.top - cm.bottom;
-    const csvg = d3.select("#corr").append("svg").attr("viewBox", `0 0 ${cw} ${chh}`)
-      .attr("role", "img").attr("aria-label", "Correlation between enrollment and fertility over time");
-    const cg = csvg.append("g").attr("transform", `translate(${cm.left},${cm.top})`);
-    const cx = d3.scaleLinear().range([0, ciw]);
-    const cy = d3.scaleLinear().domain([-1, -0.4]).range([cih, 0]);
-    const cxAxis = cg.append("g").attr("class", "axis").attr("transform", `translate(0,${cih})`);
-    cg.append("g").attr("class", "axis").call(d3.axisLeft(cy).ticks(5));
-    cg.append("g").attr("class", "grid").call(d3.axisLeft(cy).ticks(5).tickSize(-ciw).tickFormat(""));
-    const cpath = cg.append("path").attr("class", "corr-line");
-    const cmarker = cg.append("line").attr("class", "corr-marker").attr("y1", 0).attr("y2", cih);
-    const cdot = cg.append("circle").attr("class", "corr-dot").attr("r", 4.5);
-    const cval = cg.append("text").attr("class", "corr-value");
-    const cpick = cg.append("rect").attr("width", ciw).attr("height", cih)
-      .attr("fill", "transparent").style("cursor", "ew-resize").style("touch-action", "none");
-
-    function pickYear(event) {
-      const [px] = d3.pointer(event, cg.node());
-      const target = Math.round(cx.invert(px));
-      const ys = years[state.measure];
-      const nearest = ys.reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
-      stopPlay();
-      setYear(nearest, 150);
-    }
-    cpick.on("pointerdown", pickYear).on("pointermove", (event) => { if (event.buttons === 1) pickYear(event); });
-
-    function drawCorr() {
-      const series = corr[state.measure];
-      cx.domain(d3.extent(series, (d) => d.year));
-      cxAxis.call(d3.axisBottom(cx).ticks(6).tickFormat(d3.format("d")));
-      cpath.attr("d", d3.line().x((d) => cx(d.year)).y((d) => cy(d.r))(series));
-      updateCorrMarker();
-    }
-    function updateCorrMarker() {
-      const series = corr[state.measure];
-      const cur = series.find((d) => d.year === state.year);
-      if (!cur) { cmarker.attr("opacity", 0); cdot.attr("opacity", 0); cval.text(""); return; }
-      cmarker.attr("opacity", 1).attr("x1", cx(cur.year)).attr("x2", cx(cur.year));
-      cdot.attr("opacity", 1).attr("cx", cx(cur.year)).attr("cy", cy(cur.r));
-      cval.attr("x", cx(cur.year) + (cx(cur.year) > ciw - 60 ? -8 : 8))
-        .attr("text-anchor", cx(cur.year) > ciw - 60 ? "end" : "start")
-        .attr("y", Math.max(cy(cur.r) - 10, 10)).text("r = " + fmt2(cur.r));
+    /* ---------- legend ---------- */
+    function drawLegend(start, end) {
+      const box = d3.select("#legend").html("");
+      const item = (text, draw) => {
+        const el = box.append("span").attr("class", "legend-item");
+        const svg = el.append("svg").attr("width", 34).attr("height", 16);
+        draw(svg);
+        el.append("span").text(text);
+      };
+      item(`${start}`, (s) => s.append("circle").attr("cx", 17).attr("cy", 8).attr("r", 5)
+        .attr("fill", "#fff").attr("stroke", COLORS.ink).attr("stroke-width", 1.8));
+      item(`${end}`, (s) => s.append("circle").attr("cx", 17).attr("cy", 8).attr("r", 5).attr("fill", COLORS.ink));
+      [["widened", "Gap widened (women pulled ahead)"],
+       ["narrowed", "Gap narrowed (men caught up)"],
+       ["same", `About the same (±${CHANGE_THRESHOLD} yr)`]].forEach(([k, t]) =>
+        item(t, (s) => s.append("line").attr("x1", 0).attr("x2", 34).attr("y1", 8).attr("y2", 8)
+          .attr("stroke", COLORS[k]).attr("stroke-width", 3).attr("stroke-linecap", "round")));
     }
 
-    function render(dur) {
-      const rows = rowsAt(state.measure, state.year);
-      yearOut.text(state.year);
-      watermark.text(state.year);
-      emptyMsg.text(rows.length ? "" : "No data for this measure in " + state.year);
-      drawDots(rows, dur);
-      drawPinned(rows, dur);
-      updateTakeaway(rows);
-      updateCorrMarker();
+    /* ---------- chart ---------- */
+    const rowH = 23;
+    const m = { top: 54, right: 24, bottom: 56, left: 118 };
+    
+    const getW = () => Math.max(300, Math.min(960, Math.round(document.querySelector("#chart").clientWidth || 960)));
+
+    const svg = d3.select("#chart").append("svg")
+      .attr("viewBox", `0 0 ${getW()} 100`) // height set in draw()
+      .attr("role", "img");
+    const g = svg.append("g").attr("transform", `translate(${m.left},${m.top})`);
+
+    const layers = {
+      zones: g.append("g"), bands: g.append("g"), grid: g.append("g").attr("class", "grid-x"),
+      zero: g.append("g"), links: g.append("g"), starts: g.append("g"), ends: g.append("g"),
+      labels: g.append("g"), notes: g.append("g"), axis: g.append("g").attr("class", "axis"),
+    };
+
+    function draw(start, end) {
+      const W = getW();
+      const wide = W >= 760; // callouts only when there is room
+      const rows = buildRows(start, end);
+      const n = rows.length;
+      const ml = W < 560 ? 92 : m.left;      // narrower label gutter on phones
+      const iw = W - ml - m.right;
+      g.attr("transform", `translate(${ml},${m.top})`);
+      const ih = n * rowH;
+      const H = m.top + ih + m.bottom;
+
+      svg.attr("viewBox", `0 0 ${W} ${H}`)
+        .attr("aria-label",
+          `Dumbbell chart of the female minus male life expectancy gap in ${start} and ${end} for the ${n} most populous countries`);
+
+      const lo = Math.floor(d3.min(rows, (d) => Math.min(d.start, d.end)) - 1);
+      const hi = Math.ceil(d3.max(rows, (d) => Math.max(d.start, d.end)) + (wide ? 2.6 : 1)); // room for callouts
+      const x = d3.scaleLinear().domain([lo, hi]).range([0, iw]);
+      const y = d3.scaleBand().domain(rows.map((d) => d.code)).range([0, ih]).paddingInner(0);
+      const cy = (d) => y(d.code) + y.bandwidth() / 2;
+
+      /* zones: tint either side of "no gap" */
+      layers.zones.selectAll("rect").data([
+        { cls: "male", x: 0, w: x(0), fill: "#edf4fa" },
+        { cls: "female", x: x(0), w: iw - x(0), fill: "#fdf6fa" },
+      ]).join("rect").attr("class", (d) => `zone ${d.cls}`)
+        .attr("x", (d) => d.x).attr("y", 0).attr("width", (d) => d.w).attr("height", ih).attr("fill", (d) => d.fill);
+
+      /* zebra bands */
+      layers.bands.selectAll("rect").data(rows.filter((_, i) => i % 2 === 0), (d) => d.code)
+        .join("rect").attr("class", "row-band").attr("x", 0).attr("width", iw)
+        .attr("y", (d) => y(d.code)).attr("height", y.bandwidth()).attr("fill", "#0f172a").attr("fill-opacity", 0.025);
+
+      /* vertical grid + axis */
+      const tickCount = iw < 420 ? 6 : Math.min(hi - lo, 15);
+      const xAxis = d3.axisBottom(x).ticks(tickCount).tickFormat((v) => (v > 0 ? "+" + v : v < 0 ? "−" + Math.abs(v) : "0"));
+      layers.grid.attr("transform", `translate(0,${ih})`)
+        .call(d3.axisBottom(x).ticks(tickCount).tickSize(-ih).tickFormat(""));
+      layers.axis.attr("transform", `translate(0,${ih})`).call(xAxis);
+      layers.axis.selectAll(".axis-label").data([0]).join("text").attr("class", "axis-label")
+        .attr("x", iw / 2).attr("y", 44).attr("text-anchor", "middle")
+        .text("Female − male life expectancy at birth (years)");
+
+      /* zero line + zone captions */
+      layers.zero.selectAll("line").data([0]).join("line").attr("class", "zero-line")
+        .attr("x1", x(0)).attr("x2", x(0)).attr("y1", -8).attr("y2", ih);
+      layers.zero.selectAll("text").data([
+        { t: "◄ Men live longer", cls: "m", dx: -8, anchor: "end" },
+        { t: "Women live longer ►", cls: "f", dx: 8, anchor: "start" },
+      ]).join("text").attr("class", (d) => `zone-label ${d.cls}`)
+        .attr("x", (d) => x(0) + d.dx).attr("y", -16).attr("text-anchor", (d) => d.anchor).text((d) => d.t);
+
+      /* connectors (keyed by country so a later year change animates in place) */
+      layers.links.selectAll("line").data(rows, (d) => d.code).join("line")
+        .attr("class", (d) => `link ${d.kind}`).attr("data-code", (d) => d.code)
+        .attr("x1", (d) => x(d.start)).attr("x2", (d) => x(d.end))
+        .attr("y1", cy).attr("y2", cy)
+        .attr("stroke", (d) => COLORS[d.kind]).attr("stroke-width", 3.2).attr("stroke-linecap", "round")
+        .attr("stroke-opacity", 0.85);
+
+      layers.starts.selectAll("circle").data(rows, (d) => d.code).join("circle")
+        .attr("class", "dot start").attr("data-code", (d) => d.code)
+        .attr("cx", (d) => x(d.start)).attr("cy", cy).attr("r", 5.2)
+        .attr("fill", "#fff").attr("stroke", COLORS.ink).attr("stroke-width", 1.8);
+
+      layers.ends.selectAll("circle").data(rows, (d) => d.code).join("circle")
+        .attr("class", (d) => `dot end ${d.kind}`).attr("data-code", (d) => d.code)
+        .attr("cx", (d) => x(d.end)).attr("cy", cy).attr("r", 5.6)
+        .attr("fill", (d) => COLORS[d.kind]).attr("stroke", "#fff").attr("stroke-width", 1.2);
+
+      /* country labels, outside the plot on the left */
+      layers.labels.selectAll("text").data(rows, (d) => d.code).join("text")
+        .attr("class", "country-label").attr("data-code", (d) => d.code)
+        .attr("x", -10).attr("y", cy).attr("dy", "0.34em").text((d) => d.name);
+
+      drawAnnotations(wide ? rows : [], x, cy, start, end);
     }
 
-    function setYear(y, dur) {
-      state.year = y;
-      slider.property("value", y);
-      render(dur === undefined ? 400 : dur);
-    }
+    /* A few single-line callouts chosen from the data (not hard-coded), each beside the row it describes */
+    function drawAnnotations(rows, x, cy, start, end) {
+      const pick = [];
+      if (rows.length) {
+        const top = rows[0];
+        pick.push({ row: top, lead: `Largest gap in ${end}:`, rest: ` ${signed(top.end)} yrs` });
 
-    function startPlay() {
-      const ys = years[state.measure];
-      const last = ys[ys.length - 1];
-      if (state.year >= last) setYear(ys[0], 0);
-      state.playing = true;
-      playBtn.text("❚❚ Pause").attr("aria-pressed", "true");
-      timer = d3.interval(() => {
-        if (state.year >= last) { stopPlay(); return; }
-        setYear(state.year + 1, 600);
-      }, 650);
-    }
-    function stopPlay() {
-      state.playing = false;
-      if (timer) { timer.stop(); timer = null; }
-      playBtn.text("▶ Play").attr("aria-pressed", "false");
-    }
-    playBtn.on("click", () => (state.playing ? stopPlay() : startPlay()));
+        const widest = d3.greatest(rows, (d) => d.change);
+        const narrow = d3.least(rows, (d) => d.change);
+        const has = (r) => pick.some((p) => p.row === r);
 
-    slider.on("input", function () {
-      stopPlay();
-      setYear(+this.value, 200);
-    });
-
-    d3.select("#measure").on("change", function () {
-      stopPlay();
-      state.measure = this.value;
-      const m = MEASURES[state.measure];
-      const ys = years[state.measure];
-      slider.attr("min", ys[0]).attr("max", ys[ys.length - 1]);
-      state.year = Math.max(ys[0], Math.min(ys[ys.length - 1], state.year));
-      slider.property("value", state.year);
-      chart.setMeasure(m.key, xDomains[state.measure], m.axis);
-      drawCorr();
-      render(500);
-    });
-
-    function togglePin(code) {
-      if (state.pinned.has(code)) state.pinned.delete(code); else state.pinned.add(code);
-      refreshChips();
-      render(0);
-    }
-    function refreshChips() {
-      const box = d3.select("#chips");
-      const codes = Array.from(state.pinned);
-      box.selectAll(".muted").remove();
-      box.selectAll("button.chip").data(codes, (c) => c).join("button")
-        .attr("type", "button").attr("class", "chip")
-        .attr("aria-label", (c) => "Unpin " + codeToName.get(c))
-        .text((c) => shortName(codeToName.get(c)) + " ×")
-        .on("click", (event, c) => togglePin(c));
-      if (!codes.length) box.append("span").attr("class", "muted").text("none yet");
-    }
-
-    function searchCountry() {
-      const input = d3.select("#search");
-      const q = input.property("value").trim().toLowerCase();
-      if (!q) return;
-      let code = nameToCode.get(q);
-      if (!code) {
-        const hit = Array.from(nameToCode.keys()).find((n) => n.startsWith(q));
-        code = hit && nameToCode.get(hit);
+        if (widest && !has(widest))
+          pick.push({ row: widest, lead: `Biggest widening: ${signed(widest.change)} yrs`,
+            rest: widest.start < 0 ? ` (men led in ${start})` : "" });
+        if (narrow && narrow.change < -CHANGE_THRESHOLD && !has(narrow))
+          pick.push({ row: narrow, lead: `Biggest narrowing: ${signed(narrow.change)} yrs`, rest: "" });
+        rows.filter((d) => d.start < 0).forEach((r) => {
+          if (!has(r)) pick.push({ row: r, lead: `Men led in ${start}:`, rest: ` ${signed(r.start)} → ${signed(r.end)}` });
+        });
       }
-      if (code && !state.pinned.has(code)) togglePin(code);
-      input.property("value", "");
-    }
-    d3.select("#search").on("change", searchCountry)
-      .on("keydown", (event) => { if (event.key === "Enter") searchCountry(); });
 
-    d3.select("#clear").on("click", () => {
-      state.pinned.clear();
-      refreshChips();
-      render(0);
-    });
-
-    (function start() {
-      const ys = years.sec;
-      slider.attr("min", ys[0]).attr("max", ys[ys.length - 1]);
-      state.year = 1970 < ys[0] ? ys[0] : 1970;
-      slider.property("value", state.year);
-      // initialize sample options
-      ["West Bank and Gaza", "United States"].forEach((n) => {
-        const c = nameToCode.get(n.toLowerCase());
-        if (c) state.pinned.add(c);
+      const gs = layers.notes.selectAll("g.note").data(pick, (d) => d.row.code).join((enter) => {
+        const e = enter.append("g").attr("class", "note annotation");
+        e.append("line").attr("class", "annotation-line");
+        const t = e.append("text");
+        t.append("tspan").attr("class", "lead").attr("font-weight", 700);
+        t.append("tspan").attr("class", "rest");
+        return e;
       });
-      refreshChips();
-      drawCorr();
-      render(0);
-    })();
+
+      gs.each(function (d) {
+        const r = d.row;
+        const edge = Math.max(x(r.start), x(r.end));
+        const sel = d3.select(this);
+        sel.select("line").attr("x1", edge + 8).attr("x2", edge + 15).attr("y1", cy(r)).attr("y2", cy(r));
+        sel.select("text").attr("x", edge + 19).attr("y", cy(r)).attr("dy", "0.34em");
+        sel.select(".lead").text(d.lead);
+        sel.select(".rest").text(d.rest);
+      });
+    }
+
+    /* ---------- go ---------- */
+    const rows0 = buildRows(START, END);
+    writeText(rows0, START, END);
+    drawLegend(START, END);
+    draw(START, END);
+
+    // exposed so an interactive layer (slider, scroll steps, brushing) can reuse the same drawing code
+    window.visual5 = { draw, buildRows, data, featured };
+
+    let resizeTimer;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => draw(START, END), 120);
+    });
   }
 })();
